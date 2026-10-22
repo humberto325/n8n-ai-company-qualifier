@@ -148,9 +148,12 @@ Design choices:
   `website` unique, because it is the key used for the status update.
 - **Version requirements.** The workflow uses recent node versions (Google Sheets 4.7, HTTP Request
   4.5, Basic LLM Chain 1.9, Edit Fields 3.5). Older n8n versions may not import it unchanged.
-- **Not run in a live n8n instance by the author.** The workflow structure, node types and
-  versions were checked against n8n's node definitions, and the Code node logic was tested with
-  sample inputs. Expect to select credentials and the sheet on first import.
+- **Only partly run in a live instance.** The workflow was import-tested on n8n 2.44.5: every
+  node type and version is recognized, and parameters and connections survive import with no
+  parameter issues. The loop ran locally on the sample rows, with real Jina Reader fetches, page
+  cleaning, the content check, result validation, the error branch and the run summary. The
+  Google Sheets nodes and the LLM call were replaced by mocks for that run because they need
+  credentials. Expect to select credentials and the sheet on first import.
 
 ## Repository layout
 
