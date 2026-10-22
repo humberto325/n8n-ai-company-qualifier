@@ -1,0 +1,1130 @@
+{
+  "name": "AI Company Qualifier (Jina Reader + LLM)",
+  "nodes": [
+    {
+      "id": "cfe963c3-884d-f3a4-6675-526e58a7e9b5",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        220
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e8c282e1-f3d9-89a0-f82e-df868460324b",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -220,
+        420
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "6a25b4b1-2f4d-92c9-5e0e-e97a639ea25d",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        20,
+        320
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f960434a-5dd5-a546-90ae-7286b6c7b783",
+              "name": "icp",
+              "value": "B2B SaaS companies in the US with 20-500 employees that sell to marketing teams.",
+              "type": "string"
+            },
+            {
+              "id": "101b56f9-03d5-d2e8-b32a-10eeec13ee86",
+              "name": "max_rows_per_run",
+              "value": 25,
+              "type": "number"
+            },
+            {
+              "id": "f2fd0b2f-9705-f8f9-3da6-6248a982ecb8",
+              "name": "max_markdown_chars",
+              "value": 12000,
+              "type": "number"
+            },
+            {
+              "id": "55cbf709-d457-a660-ccc7-1a36500586fb",
+              "name": "min_markdown_chars",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "cfe1d726-caa5-ae71-7793-551162a597d6",
+              "name": "wait_seconds",
+              "value": 2,
+              "type": "number"
+            },
+            {
+              "id": "616c2691-40d4-8932-dd2f-fbd4aa1ce809",
+              "name": "high_fit_threshold",
+              "value": 7,
+              "type": "number"
+            },
+            {
+              "id": "ce1a1c5b-0998-4fe6-0917-9bbfe2beed9e",
+              "name": "run_started_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c60a3e0e-c15f-e3d0-2e3d-eefe2d1eee58",
+      "name": "Read Company Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        240,
+        320
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "companies"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "df1b9b83-36a5-1f88-0049-3647a2d673d5",
+      "name": "Select Pending Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        320
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Selects rows that still need qualifying and normalizes their website URL.\n// Pending = status is empty, \"pending\" or \"retry\". Rows are capped at max_rows_per_run.\nconst config = $('Config').first().json;\nconst limit = Number(config.max_rows_per_run) > 0 ? Number(config.max_rows_per_run) : 25;\nconst PENDING_STATUSES = new Set(['', 'pending', 'retry']);\n\nfunction normalizeUrl(raw) {\n  let candidate = String(raw).trim().replace(/\\s+/g, '');\n  if (!/^https?:\\/\\//i.test(candidate)) candidate = 'https://' + candidate;\n  try {\n    const url = new URL(candidate);\n    const path = url.pathname === '/' ? '' : url.pathname.replace(/\\/+$/, '');\n    return url.origin + path;\n  } catch (error) {\n    // Unparseable input is passed through as-is: the fetch step will fail\n    // and the row ends up with status=error and a readable message.\n    return candidate;\n  }\n}\n\nconst seen = new Set();\nconst selected = [];\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  const status = String(row.status ?? '').trim().toLowerCase();\n  const website = String(row.website ?? '').trim();\n  if (!PENDING_STATUSES.has(status) || !website) continue;\n\n  const url = normalizeUrl(website);\n  if (seen.has(url.toLowerCase())) continue; // duplicate website in the sheet\n  seen.add(url.toLowerCase());\n\n  selected.push({\n    json: {\n      company_name: String(row.company_name ?? '').trim(),\n      website, // original value, used as the key when updating the row\n      url,\n    },\n  });\n  if (selected.length >= limit) break;\n}\n\nreturn selected;"
+      }
+    },
+    {
+      "id": "9c7eec1b-5615-7899-1dea-3c6be8a0d5b7",
+      "name": "Loop Over Companies",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        680,
+        320
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "536ba970-4e08-976c-1c28-532977be96c8",
+      "name": "Fetch Website (Jina Reader)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        920,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://r.jina.ai/{{ $json.url }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Return-Format",
+              "value": "markdown"
+            },
+            {
+              "name": "X-Retain-Images",
+              "value": "none"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 45000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c3f95d51-cda2-748c-2db4-cb29b81f117c",
+      "name": "Prepare Page Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Cleans the Jina Reader markdown, trims it to a character budget and\n// flags pages that are empty or blocked so they never reach the LLM.\nconst config = $('Config').first().json;\nconst row = $('Loop Over Companies').item.json;\nconst maxChars = Number(config.max_markdown_chars) > 0 ? Number(config.max_markdown_chars) : 12000;\nconst minChars = Number(config.min_markdown_chars) >= 0 ? Number(config.min_markdown_chars) : 300;\n\n// Phrases typical of bot walls and error pages. Only checked on short pages\n// so a long, legitimate page that mentions \"captcha\" is not rejected.\nconst BLOCKED_PATTERNS = [\n  /captcha/i,\n  /access denied/i,\n  /attention required/i,\n  /just a moment\\.\\.\\./i,\n  /enable javascript and cookies/i,\n  /target url returned error \\d{3}/i,\n  /\\b(403 forbidden|404 not found|502 bad gateway|503 service unavailable)\\b/i,\n  /this domain (is|may be) for sale/i,\n];\nconst BLOCK_CHECK_MAX_LENGTH = 3000;\n\nconst raw = typeof $json.data === 'string' ? $json.data : '';\n\nlet markdown = raw\n  .replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, '')      // drop images\n  .replace(/\\[([^\\]]*)\\]\\([^)]*\\)/g, '$1')    // keep link text, drop URLs\n  .replace(/[{}]/g, '')                      // braces are template variables in LLM prompts\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/ *\\n */g, '\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst originalChars = markdown.length;\nlet truncated = false;\nif (markdown.length > maxChars) {\n  const cut = markdown.slice(0, maxChars);\n  const lastBreak = cut.lastIndexOf('\\n');\n  // Prefer to cut at a line break when one is reasonably close to the limit.\n  markdown = (lastBreak > maxChars * 0.8 ? cut.slice(0, lastBreak) : cut).trim();\n  truncated = true;\n}\n\nlet skipReason = '';\nif (!markdown) {\n  skipReason = 'Empty page content';\n} else if (originalChars < BLOCK_CHECK_MAX_LENGTH && BLOCKED_PATTERNS.some((p) => p.test(markdown))) {\n  skipReason = 'Website blocked the reader or returned an error page';\n} else if (markdown.length < minChars) {\n  skipReason = `Too little readable content (${markdown.length} chars, minimum ${minChars})`;\n}\n\nreturn {\n  json: {\n    company_name: row.company_name,\n    website: row.website,\n    url: row.url,\n    markdown,\n    original_chars: originalChars,\n    truncated,\n    content_ok: skipReason === '',\n    skip_reason: skipReason,\n  },\n};"
+      }
+    },
+    {
+      "id": "72f7ad7c-f597-8dad-5abb-fbe1070ff169",
+      "name": "Has Usable Content?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1360,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8086be33-95b4-7f68-99e6-551d698cf010",
+              "leftValue": "={{ $json.content_ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "18f4c91e-44f6-5467-b016-2e0ee66dcc29",
+      "name": "Qualify Company (LLM)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1600,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "promptType": "define",
+        "text": "=Qualify this company against the Ideal Customer Profile.\n\nCompany name: {{ $json.company_name || 'unknown' }}\nWebsite: {{ $json.url }}\nContent truncated to fit the budget: {{ $json.truncated }}\n\nWebsite content (markdown, may be partial):\n\"\"\"\n{{ $json.markdown }}\n\"\"\"",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessagePromptTemplate",
+              "message": "=You are a B2B sales research analyst. You qualify companies against an Ideal Customer Profile (ICP) using only the website content you are given.\n\nIDEAL CUSTOMER PROFILE:\n{{ $('Config').first().json.icp }}\n\nSCORING RUBRIC (score is an integer from 1 to 10):\n- 9-10: Clear match on every ICP dimension (business model, geography, size, buyer). Strong evidence on the site.\n- 7-8: Matches the core of the ICP; one dimension is uncertain or slightly outside the range.\n- 5-6: Partial match. Plausible fit, but important dimensions are missing or ambiguous.\n- 3-4: Weak match. Adjacent business, wrong buyer, or clearly outside the size or geography range.\n- 1-2: No match, or the content does not describe a business at all.\n\nRULES:\n- Base every judgement on the provided content. Do not invent facts, customers, funding or headcount.\n- When evidence is missing, say so in the reasons and lower the score; never guess upward.\n- industry: a short label, 1 to 4 words, for example \"Marketing analytics SaaS\".\n- company_size_guess: one of 1-10, 11-50, 51-200, 201-500, 501-1000, 1000+, unknown. Use unknown when the site gives no signal.\n- reasons: 2 to 5 short bullet-style sentences explaining the score, each under 25 words.\n- pitch: one paragraph, at most 80 words, addressed to the company. Reference something specific from their site and connect it to a concrete outcome. No greetings, no sign-off, no placeholders such as [Name].\n- Write in English."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "5c0c3dfa-e9e3-0d46-c60f-b77add4c2a5d",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1560,
+        620
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini",
+          "cachedResultName": "gpt-5-mini"
+        },
+        "options": {
+          "reasoningEffort": "low",
+          "timeout": 60000,
+          "maxRetries": 2
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "id": "b4d7425e-20ce-ae00-d8ab-97efb6c9559e",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        620
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"score\": {\n      \"type\": \"integer\",\n      \"minimum\": 1,\n      \"maximum\": 10,\n      \"description\": \"ICP fit score from 1 (no fit) to 10 (perfect fit)\"\n    },\n    \"industry\": {\n      \"type\": \"string\",\n      \"description\": \"Short industry label, 1-4 words\"\n    },\n    \"company_size_guess\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"1-10\",\n        \"11-50\",\n        \"51-200\",\n        \"201-500\",\n        \"501-1000\",\n        \"1000+\",\n        \"unknown\"\n      ]\n    },\n    \"reasons\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"minItems\": 1,\n      \"maxItems\": 5\n    },\n    \"pitch\": {\n      \"type\": \"string\",\n      \"description\": \"One personalized paragraph, at most 80 words\"\n    }\n  },\n  \"required\": [\n    \"score\",\n    \"industry\",\n    \"company_size_guess\",\n    \"reasons\",\n    \"pitch\"\n  ],\n  \"additionalProperties\": false\n}"
+      }
+    },
+    {
+      "id": "c0b739d4-23ec-a9de-1e50-be8177b49da7",
+      "name": "Validate Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        380
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Treats the LLM output as untrusted input: clamps the score, normalizes\n// enums and caps text lengths. Throws only when the output is unusable,\n// which routes the item to the error branch.\nconst source = $('Prepare Page Content').item.json;\nconst result = $json.output;\n\nif (!result || typeof result !== 'object') {\n  throw new Error('LLM returned no structured output');\n}\n\nconst SIZE_BUCKETS = ['1-10', '11-50', '51-200', '201-500', '501-1000', '1000+', 'unknown'];\nconst clean = (value, maxLength) => String(value ?? '').replace(/\\s+/g, ' ').trim().slice(0, maxLength);\n\nconst rawScore = Number(result.score);\nif (!Number.isFinite(rawScore)) {\n  throw new Error(`LLM output has no numeric score (got: ${clean(result.score, 40) || 'empty'})`);\n}\nconst score = Math.min(10, Math.max(1, Math.round(rawScore)));\n\nconst reasonList = Array.isArray(result.reasons) ? result.reasons : [result.reasons];\nconst reasons = reasonList.map((r) => clean(r, 200)).filter(Boolean).slice(0, 5);\n\nconst size = clean(result.company_size_guess, 20);\n\nreturn {\n  json: {\n    company_name: source.company_name,\n    website: source.website,\n    score,\n    industry: clean(result.industry, 80) || 'Unknown',\n    company_size_guess: SIZE_BUCKETS.includes(size) ? size : 'unknown',\n    reasons: reasons.join(' | '),\n    pitch: clean(result.pitch, 700),\n    qualified_at: new Date().toISOString(),\n  },\n};"
+      }
+    },
+    {
+      "id": "d6749d59-074e-b6ee-e3d6-6cb6d0ec5c3e",
+      "name": "Append Result Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2180,
+        380
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "company_name": "={{ $json.company_name }}",
+            "website": "={{ $json.website }}",
+            "score": "={{ $json.score }}",
+            "industry": "={{ $json.industry }}",
+            "company_size_guess": "={{ $json.company_size_guess }}",
+            "reasons": "={{ $json.reasons }}",
+            "pitch": "={{ $json.pitch }}",
+            "qualified_at": "={{ $json.qualified_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "industry",
+              "displayName": "industry",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "company_size_guess",
+              "displayName": "company_size_guess",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "reasons",
+              "displayName": "reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "pitch",
+              "displayName": "pitch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "qualified_at",
+              "displayName": "qualified_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "64188b60-64d9-67e8-838e-b70b7589b842",
+      "name": "Mark Row Done",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2400,
+        380
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "companies"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $('Validate Result').item.json.website }}",
+            "status": "done",
+            "score": "={{ $('Validate Result').item.json.score }}",
+            "error_message": "",
+            "processed_at": "={{ $('Validate Result').item.json.qualified_at }}"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "44808554-c6da-4f70-3690-ce3d216ef477",
+      "name": "Build Error Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        820
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Collects failures from every step (fetch, empty page, LLM, validation,\n// sheet append) into one row shape so the loop can continue.\nlet row = {};\ntry {\n  row = $('Loop Over Companies').item.json;\n} catch (error) {\n  row = {}; // paired item not resolvable; fall back to fields on the item itself\n}\n\nconst err = $json.error;\nconst errorText = typeof err === 'string' ? err : (err && (err.message || err.description)) || '';\nconst message = $json.skip_reason || errorText || $json.message || 'Unknown error';\n\nreturn {\n  json: {\n    company_name: row.company_name ?? $json.company_name ?? '',\n    website: row.website ?? $json.website ?? '',\n    status: 'error',\n    error_message: String(message).replace(/\\s+/g, ' ').trim().slice(0, 300),\n    processed_at: new Date().toISOString(),\n  },\n};"
+      }
+    },
+    {
+      "id": "1050a97f-04ed-3005-dc80-b32ec48286ce",
+      "name": "Mark Row Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2400,
+        820
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "companies"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $json.website }}",
+            "status": "error",
+            "error_message": "={{ $json.error_message }}",
+            "processed_at": "={{ $json.processed_at }}"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "dd1fca3b-fd14-d665-29ba-67f1dd55cac3",
+      "name": "Rate Limit Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2640,
+        600
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Config').first().json.wait_seconds }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "d6e29988-1354-cb61-48dd-f021873928b0",
+      "name": "Re-read Company Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        920,
+        120
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "companies"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "ba747f84-afa2-8651-a802-aff4387037fe",
+      "name": "Build Run Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Counts the outcome of this run from the re-read sheet. Reading the sheet\n// (instead of node outputs) counts every loop iteration, not just the last one.\nconst config = $('Config').first().json;\nconst runStartedAt = Date.parse(config.run_started_at) || 0;\nconst threshold = Number(config.high_fit_threshold) || 7;\n\nconst counts = { done: 0, error: 0, pending: 0, high_fit: 0 };\nconst errors = [];\n\nfor (const { json: row } of $input.all()) {\n  const status = String(row.status ?? '').trim().toLowerCase();\n  if (status === '' || status === 'pending' || status === 'retry') {\n    counts.pending += 1;\n    continue;\n  }\n  const processedAt = Date.parse(row.processed_at);\n  if (!Number.isFinite(processedAt) || processedAt < runStartedAt) continue; // earlier run\n\n  if (status === 'done') {\n    counts.done += 1;\n    if (Number(row.score) >= threshold) counts.high_fit += 1;\n  } else if (status === 'error') {\n    counts.error += 1;\n    errors.push(`${row.website}: ${row.error_message}`);\n  }\n}\n\nconst lines = [\n  'AI Company Qualifier run finished.',\n  `Qualified: ${counts.done} (score >= ${threshold}: ${counts.high_fit})`,\n  `Errors: ${counts.error}`,\n  `Still pending: ${counts.pending}`,\n];\nif (errors.length) lines.push('', 'First errors:', ...errors.slice(0, 5).map((e) => `- ${e}`));\n\nreturn [{\n  json: {\n    run_started_at: config.run_started_at,\n    processed: counts.done + counts.error,\n    ...counts,\n    errors: errors.slice(0, 10),\n    summary_text: lines.join('\\n'),\n  },\n}];"
+      }
+    },
+    {
+      "id": "801fe79e-4562-a813-1edf-d1fda130673e",
+      "name": "Notify Slack (optional)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1360,
+        120
+      ],
+      "disabled": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#lead-qualification"
+        },
+        "messageType": "text",
+        "text": "={{ $json.summary_text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": true
+        }
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "id": "b5c20c65-5b7c-659f-555f-7935559a0331",
+      "name": "Sticky Note Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -280,
+        -180
+      ],
+      "parameters": {
+        "content": "## AI Company Qualifier\nReads pending companies from Google Sheets, reads each website as markdown with **Jina Reader**, scores it 1-10 against your ICP with an LLM, and writes the result back.\n\n**Setup:** connect Google Sheets + OpenAI credentials, set the spreadsheet ID in the 4 Sheets nodes, edit the ICP in **Config**.",
+        "width": 520,
+        "height": 280,
+        "color": 4
+      }
+    },
+    {
+      "id": "a37a483c-7eee-242a-bbde-97b64826255a",
+      "name": "Sticky Note Load",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        140
+      ],
+      "parameters": {
+        "content": "### 1. Load\n**Config** holds every tunable value (ICP, limits, wait). Rows with an empty / `pending` / `retry` status are selected, URLs normalized, capped at `max_rows_per_run`.",
+        "width": 620,
+        "height": 380,
+        "color": 7
+      }
+    },
+    {
+      "id": "c44a9eb4-bceb-e26b-4537-c72a1675b139",
+      "name": "Sticky Note Fetch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        860,
+        260
+      ],
+      "parameters": {
+        "content": "### 2. Fetch & clean\nJina Reader returns the page as markdown (45 s timeout, 3 tries). The Code node strips links/images, trims to `max_markdown_chars` and flags empty or blocked pages so they never reach the LLM.",
+        "width": 660,
+        "height": 380,
+        "color": 7
+      }
+    },
+    {
+      "id": "4c9c31d8-5e65-a59f-767e-b833cb486836",
+      "name": "Sticky Note Qualify",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        220
+      ],
+      "parameters": {
+        "content": "### 3. Qualify\nBasic LLM Chain + Structured Output Parser (JSON schema). **Validate Result** treats the model as untrusted: clamps score, caps lists and lengths.",
+        "width": 560,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "351e4bb2-dca9-de9c-6ac7-fcd29c356c14",
+      "name": "Sticky Note Write",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2140,
+        220
+      ],
+      "parameters": {
+        "content": "### 4. Write back & isolate errors\nSuccess: append to `results`, then set `status=done` on `companies`.\nAny failure (fetch, empty page, LLM, write) goes to **Build Error Row** -> `status=error` + message. The loop always continues; one item per iteration, then a short wait.",
+        "width": 620,
+        "height": 780,
+        "color": 5
+      }
+    },
+    {
+      "id": "a36758b6-710f-2987-6c4b-2bf4bbbd45bc",
+      "name": "Sticky Note Summary",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        860,
+        -120
+      ],
+      "parameters": {
+        "content": "### 5. Summary\nAfter the loop, re-reads the sheet and counts done / error / pending for this run. Enable the Slack node to get the summary in a channel.",
+        "width": 700,
+        "height": 220,
+        "color": 6
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Read Company Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Company Rows": {
+      "main": [
+        [
+          {
+            "node": "Select Pending Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Pending Rows": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Companies": {
+      "main": [
+        [
+          {
+            "node": "Re-read Company Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Website (Jina Reader)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website (Jina Reader)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Page Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Page Content": {
+      "main": [
+        [
+          {
+            "node": "Has Usable Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Usable Content?": {
+      "main": [
+        [
+          {
+            "node": "Qualify Company (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Qualify Company (LLM)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Qualify Company (LLM)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualify Company (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Validate Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Result": {
+      "main": [
+        [
+          {
+            "node": "Append Result Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Result Row": {
+      "main": [
+        [
+          {
+            "node": "Mark Row Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Row": {
+      "main": [
+        [
+          {
+            "node": "Mark Row Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Row Done": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Row Error": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-read Company Rows": {
+      "main": [
+        [
+          {
+            "node": "Build Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Run Summary": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

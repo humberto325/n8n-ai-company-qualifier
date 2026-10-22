@@ -1,0 +1,8 @@
+company_name,website,status,score,error_message,processed_at
+Sample - Brightfunnel Analytics,https://brightfunnel.example.com,,,,
+Sample - Copyloop,copyloop.example.org,,,,
+Sample - Harbor Freight Logistics Co,https://harbor-logistics.example.net,,,,
+Sample - Pixelpost Social Scheduler,pixelpost.example.com,pending,,,
+Sample - Quillmetrics Attribution,https://quillmetrics.example.org/,,,,
+Sample - Maple Street Bakery,maplestreetbakery.example.com,,,,
+Sample - Unreachable Site,https://does-not-exist.example.invalid,,,,
